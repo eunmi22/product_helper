@@ -67,6 +67,8 @@ if source == "업로드한 PDF에서 찾기":
         if file_hash != st.session_state.pdf_hash:
             st.session_state.pdf_index = None
             st.session_state.pdf_hash = file_hash
+            # 다른 PDF를 올렸을 때 이전 PDF의 답변이 뒤섞이지 않도록 초기화
+            st.session_state.chat_history = []
             try:
                 with st.spinner("업로드한 PDF를 분석하고 있습니다..."):
                     st.session_state.pdf_index = prepare_manual(
@@ -76,6 +78,7 @@ if source == "업로드한 PDF에서 찾기":
                 st.error(f"PDF 준비 실패 ({type(exc).__name__}). 텍스트 PDF인지 확인하세요.")
         if st.session_state.pdf_index is not None:
             st.success(f"검색 준비 완료: {uploaded.name}")
+            st.caption("전체 요약은 PDF 전 페이지를 확인하고, 단어 개수는 Python으로 정확히 계산합니다.")
 
 @st.cache_resource(show_spinner=False)
 def cached_graph(api_key, serpapi_key, model):
@@ -112,7 +115,7 @@ if question is not None:
                 retriever, llm = st.session_state.pdf_index
                 answer, pages = answer_manual(question, retriever, llm)
                 if pages:
-                    sources = "**검색된 참고 PDF 페이지:** " + ", ".join(
+                    sources = "**참고한 PDF 페이지:** " + ", ".join(
                         f"{page}페이지" for page in pages
                     )
             else:
