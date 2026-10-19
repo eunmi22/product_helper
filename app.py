@@ -1,12 +1,13 @@
 """수업 3번(PDF RAG) + 수업 5번(LangGraph)을 연결한 Streamlit 앱."""
 import os
+import hashlib
 from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
 
 # Streamlit 화면 설정은 첫 번째 Streamlit 명령이어야 합니다.
-st.set_page_config(page_title="HomaBot 제품 안내 챗봇", page_icon="📘")
+st.set_page_config(page_title="PDF · 웹 검색 챗봇", page_icon="📘")
 
 from manual_rag import prepare_manual, answer_manual
 from web_graph import build_web_graph
@@ -36,10 +37,10 @@ OPENAI_API_KEY = read_setting("OPENAI_API_KEY")
 SERPAPI_KEY = read_setting("SERPAPI_KEY") or read_setting("SERPAPI_API_KEY")
 MODEL = read_setting("OPENAI_MODEL", "gpt-4o-mini")
 
-st.title("HomaBot 제품 안내 챗봇")
-st.caption("PDF 매뉴얼 또는 웹 검색 결과를 바탕으로 답변합니다.")
+st.title("PDF · 웹 검색 챗봇")
+st.caption("업로드한 PDF 또는 웹 검색 결과를 바탕으로 답변합니다.")
 
-source = st.radio("검색 방식 선택", ["매뉴얼에서 찾기", "웹에서 찾기"], horizontal=True)
+source = st.radio("검색 방식 선택", ["업로드한 PDF에서 찾기", "웹에서 찾기"], horizontal=True)
 
 if not OPENAI_API_KEY or OPENAI_API_KEY.startswith("여기에_"):
     st.error("OPENAI_API_KEY가 설정되지 않았습니다. Secrets 또는 .env를 확인하세요.")
@@ -49,11 +50,32 @@ if source == "웹에서 찾기" and (not SERPAPI_KEY or SERPAPI_KEY.startswith("
     st.stop()
 
 
-@st.cache_resource(show_spinner="PDF 검색기 준비 중...")
-def cached_manual(api_key, model):
-    # PDF 임베딩은 비용이 발생할 수 있으므로 앱 재실행마다 만들지 않음
-    return prepare_manual(api_key, model)
+# PDF 검색기는 사용자 세션별로 보관합니다. 전역 캐시는 사용하지 않습니다.
+if "pdf_hash" not in st.session_state:
+    st.session_state.pdf_hash = None
+    st.session_state.pdf_index = None
 
+if source == "업로드한 PDF에서 찾기":
+    uploaded = st.file_uploader("PDF 파일 업로드", type=["pdf"], max_upload_size=20)
+    if uploaded is None:
+        st.session_state.pdf_hash = None
+        st.session_state.pdf_index = None
+        st.info("먼저 PDF 파일을 업로드하세요.")
+    else:
+        pdf_bytes = uploaded.getvalue()
+        file_hash = hashlib.sha256(pdf_bytes).hexdigest()
+        if file_hash != st.session_state.pdf_hash:
+            st.session_state.pdf_index = None
+            st.session_state.pdf_hash = file_hash
+            try:
+                with st.spinner("업로드한 PDF를 분석하고 있습니다..."):
+                    st.session_state.pdf_index = prepare_manual(
+                        OPENAI_API_KEY, MODEL, pdf_bytes
+                    )
+            except Exception as exc:
+                st.error(f"PDF 준비 실패 ({type(exc).__name__}). 텍스트 PDF인지 확인하세요.")
+        if st.session_state.pdf_index is not None:
+            st.success(f"검색 준비 완료: {uploaded.name}")
 
 @st.cache_resource(show_spinner=False)
 def cached_graph(api_key, serpapi_key, model):
@@ -83,8 +105,11 @@ if question is not None:
     sources = ""
     with st.spinner("답변을 만드는 중입니다..."):
         try:
-            if source == "매뉴얼에서 찾기":
-                retriever, llm = cached_manual(OPENAI_API_KEY, MODEL)
+            if source == "업로드한 PDF에서 찾기":
+                if st.session_state.pdf_index is None:
+                    st.warning("PDF 파일을 먼저 업로드해 주세요.")
+                    st.stop()
+                retriever, llm = st.session_state.pdf_index
                 answer, pages = answer_manual(question, retriever, llm)
                 if pages:
                     sources = "**검색된 참고 PDF 페이지:** " + ", ".join(
@@ -107,9 +132,9 @@ if question is not None:
                         lines.append(f"{i}. [{title}](<{item['link']}>) — {date}")
                     sources = "\n\n".join(lines)
         except FileNotFoundError:
-            answer = "매뉴얼 PDF 파일이 없습니다. 프로젝트 폴더에 homabot_manual.pdf를 넣어주세요."
+            answer = "PDF 파일이 없습니다. 파일을 업로드해 주세요."
         except ValueError:
-            answer = "매뉴얼에서 텍스트를 읽을 수 없거나 설정값이 올바르지 않습니다."
+            answer = "PDF에서 텍스트를 읽을 수 없거나 설정값이 올바르지 않습니다."
         except Exception as exc:
             # 예외 원문에는 비밀값이나 요청 URL이 포함될 수 있으므로 유형만 노출
             answer = f"실행 오류({type(exc).__name__}). 패키지·API 키·서비스 상태를 확인하세요."
